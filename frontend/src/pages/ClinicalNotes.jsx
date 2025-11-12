@@ -164,20 +164,26 @@ export default function ClinicalNotes() {
                 startIcon={loading ? <CircularProgress size={20} /> : <AutoAwesomeIcon />}
                 onClick={handleGenerate}
                 disabled={loading}
+                sx={{
+                  background: 'linear-gradient(45deg, #00897b 30%, #26a69a 90%)',
+                  '&:hover': {
+                    background: 'linear-gradient(45deg, #00796b 30%, #00897b 90%)',
+                  }
+                }}
               >
-                {loading ? 'Generating...' : 'Generate with Claude 3'}
+                {loading ? 'Generating...' : 'Generate with AI'}
               </Button>
 
-              <Box sx={{ mt: 2, p: 2, bgcolor: 'info.lighter', borderRadius: 1 }}>
+              <Box sx={{ mt: 2, p: 2, bgcolor: 'success.lighter', borderRadius: 1 }}>
                 <Chip
                   icon={<AutoAwesomeIcon />}
-                  label="Powered by Amazon Bedrock"
+                  label="Amazon Titan GenAI (FREE)"
                   size="small"
-                  color="info"
+                  color="success"
                   sx={{ mb: 1 }}
                 />
                 <Typography variant="caption" display="block" color="text.secondary">
-                  Uses Claude 3 Sonnet for professional medical documentation
+                  Uses Amazon Titan Text Express for professional medical documentation
                 </Typography>
               </Box>
             </CardContent>
@@ -230,7 +236,7 @@ export default function ClinicalNotes() {
                   <Typography color="textSecondary" align="center" sx={{ mt: 10 }}>
                     {loading
                       ? 'Generating clinical note with AI...'
-                      : 'Fill in patient information and click "Generate with Claude 3"'}
+                      : 'Fill in patient information and click "Generate with AI"'}
                   </Typography>
                 )}
                 {generatedNote}

@@ -100,12 +100,12 @@ export default function ICD10Coding() {
                 {loading ? 'Analyzing...' : 'Suggest ICD-10 Codes'}
               </Button>
 
-              <Box sx={{ mt: 2, p: 2, bgcolor: 'info.lighter', borderRadius: 1 }}>
+              <Box sx={{ mt: 2, p: 2, bgcolor: 'success.lighter', borderRadius: 1 }}>
                 <Chip
                   icon={<AutoAwesomeIcon />}
-                  label="Powered by Claude 3"
+                  label="Amazon Titan GenAI (FREE)"
                   size="small"
-                  color="info"
+                  color="success"
                   sx={{ mb: 1 }}
                 />
                 <Typography variant="caption" display="block" color="text.secondary">

@@ -1,0 +1,138 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: ehr-ai-system
+
+jobs:
+  deploy-backend:
+    name: Deploy Backend (Lambda + API Gateway)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements-lambda.txt
+
+      - name: Package Lambda functions
+        run: |
+          cd backend/lambda_functions
+          mkdir -p package
+          pip install -r ../requirements-lambda.txt -t package/
+          cp *.py package/
+          cd package
+          zip -r ../lambda_functions.zip .
+          cd ..
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation package \
+            --template-file infrastructure/cloudformation-template.yaml \
+            --s3-bucket ehr-ai-deployment-${{ github.run_id }} \
+            --output-template-file infrastructure/packaged-template.yaml
+
+          aws cloudformation deploy \
+            --template-file infrastructure/packaged-template.yaml \
+            --stack-name ${{ env.STACK_NAME }} \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides Environment=production
+
+      - name: Get API Gateway URL
+        id: get-api-url
+        run: |
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.STACK_NAME }} \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiGatewayUrl'].OutputValue" \
+            --output text)
+          echo "API_URL=$API_URL" >> $GITHUB_OUTPUT
+
+    outputs:
+      api-url: ${{ steps.get-api-url.outputs.API_URL }}
+
+  deploy-frontend:
+    name: Deploy Frontend (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Build frontend
+        env:
+          VITE_API_URL: ${{ needs.deploy-backend.outputs.api-url }}
+          VITE_AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to S3
+        run: |
+          BUCKET_NAME=ehr-ai-frontend-${{ github.sha }}
+          aws s3 mb s3://$BUCKET_NAME || true
+          aws s3 sync frontend/dist/ s3://$BUCKET_NAME --delete
+          aws s3 website s3://$BUCKET_NAME --index-document index.html --error-document index.html
+          
+          # Make bucket public
+          aws s3api put-bucket-policy --bucket $BUCKET_NAME --policy "{
+            \"Version\": \"2012-10-17\",
+            \"Statement\": [{
+              \"Sid\": \"PublicReadGetObject\",
+              \"Effect\": \"Allow\",
+              \"Principal\": \"*\",
+              \"Action\": \"s3:GetObject\",
+              \"Resource\": \"arn:aws:s3:::$BUCKET_NAME/*\"
+            }]
+          }"
+          
+          FRONTEND_URL="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
+          echo "Frontend URL: $FRONTEND_URL"
+          echo "FRONTEND_URL=$FRONTEND_URL" >> $GITHUB_ENV
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Complete! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend:** ${{ env.FRONTEND_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **API Gateway:** ${{ needs.deploy-backend.outputs.api-url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY

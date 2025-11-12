@@ -5,17 +5,62 @@ Uses Amazon Bedrock Titan Text Express (FREE) for medical documentation
 import json
 import boto3
 import os
+import re
 from datetime import datetime
 
 # Initialize Bedrock client
 bedrock_runtime = boto3.client('bedrock-runtime', region_name=os.environ.get('AWS_REGION', 'us-east-1'))
 dynamodb = boto3.resource('dynamodb')
 
+def validate_clinical_input(patient_info, findings):
+    """
+    Validate input to ensure it's medically relevant
+    Returns: (is_valid, error_message)
+    """
+    # Check if patient info has minimal required fields
+    if not patient_info.get('name') or len(patient_info.get('name', '').strip()) < 2:
+        return False, "Patient name is required and must be at least 2 characters"
+    
+    if not patient_info.get('age') or not str(patient_info.get('age')).isdigit():
+        return False, "Valid patient age is required"
+    
+    age = int(patient_info.get('age', 0))
+    if age < 0 or age > 120:
+        return False, "Patient age must be between 0 and 120 years"
+    
+    # Check if findings contain medical terms or are too short
+    findings_text = ' '.join([str(f) for f in findings]) if isinstance(findings, list) else str(findings)
+    if len(findings_text.strip()) < 10:
+        return False, "Clinical findings must be at least 10 characters long"
+    
+    # Check for completely irrelevant input (e.g., random text, gibberish)
+    medical_keywords = [
+        'pain', 'symptom', 'fever', 'cough', 'headache', 'fatigue', 'nausea',
+        'chest', 'abdomen', 'throat', 'temperature', 'pressure', 'heart', 'lung',
+        'breathing', 'dizzy', 'swelling', 'rash', 'injury', 'fracture', 'diagnosis',
+        'patient', 'medical', 'treatment', 'medication', 'history', 'examination',
+        'vital', 'blood', 'pulse', 'respiratory', 'bp', 'hr', 'complaint'
+    ]
+    
+    findings_lower = findings_text.lower()
+    has_medical_content = any(keyword in findings_lower for keyword in medical_keywords)
+    
+    if not has_medical_content:
+        return False, "Input does not appear to contain valid medical/clinical information. Please provide relevant clinical findings."
+    
+    return True, None
+
 def generate_soap_note(patient_info, findings, bedrock_client):
     """
     Generate SOAP note using Amazon Titan Text Express (FREE GenAI model)
     """
+    # Validate input first
+    is_valid, error_msg = validate_clinical_input(patient_info, findings)
+    if not is_valid:
+        raise ValueError(f"Invalid input: {error_msg}")
+    
     model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.titan-text-express-v1')
+    sagemaker_endpoint = os.environ.get('SAGEMAKER_ENDPOINT')
     
     prompt = f"""You are an experienced medical documentation assistant. Generate a professional SOAP note based on the following information:
 
@@ -33,25 +78,49 @@ Generate a comprehensive SOAP note with the following sections:
 
 Format the note professionally and include all relevant medical details."""
 
-    # Amazon Titan Text request format (different from Claude)
-    request_body = {
-        "inputText": prompt,
-        "textGenerationConfig": {
-            "maxTokenCount": 2000,
-            "temperature": 0.3,
-            "topP": 0.9,
-            "stopSequences": []
+    try:
+        # Primary: Use Amazon Titan Text Express (FREE)
+        request_body = {
+            "inputText": prompt,
+            "textGenerationConfig": {
+                "maxTokenCount": 2000,
+                "temperature": 0.3,
+                "topP": 0.9,
+                "stopSequences": []
+            }
         }
-    }
-    
-    response = bedrock_client.invoke_model(
-        modelId=model_id,
-        body=json.dumps(request_body)
-    )
-    
-    response_body = json.loads(response['body'].read())
-    # Titan response format: {"results": [{"outputText": "..."}]}
-    soap_note = response_body['results'][0]['outputText']
+        
+        response = bedrock_client.invoke_model(
+            modelId=model_id,
+            body=json.dumps(request_body)
+        )
+        
+        response_body = json.loads(response['body'].read())
+        soap_note = response_body['results'][0]['outputText']
+        
+    except Exception as bedrock_error:
+        # Fallback: Use SageMaker BioGPT if Bedrock fails
+        if sagemaker_endpoint:
+            print(f"⚠️ Bedrock failed, trying SageMaker BioGPT: {str(bedrock_error)}")
+            sagemaker_runtime = boto3.client('sagemaker-runtime')
+            
+            response = sagemaker_runtime.invoke_endpoint(
+                EndpointName=sagemaker_endpoint,
+                ContentType='application/json',
+                Body=json.dumps({
+                    "inputs": prompt,
+                    "parameters": {
+                        "max_new_tokens": 500,
+                        "temperature": 0.3,
+                        "top_p": 0.9
+                    }
+                })
+            )
+            
+            result = json.loads(response['Body'].read())
+            soap_note = result[0]['generated_text'] if isinstance(result, list) else result['generated_text']
+        else:
+            raise bedrock_error
     
     return soap_note
 
